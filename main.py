@@ -1,28 +1,22 @@
 import os
 import re
 import io
-import secrets
-import openpyxl
-from collections import defaultdict
+import uuid
+import unicodedata
+import zipfile
+from collections import Counter
 from datetime import datetime, timedelta
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
+from io import BytesIO
+
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from docx import Document
 
 # ==========================
 # Configuración
 # ==========================
-CARACTERES_PROHIBIDOS = set("!@#$%&/()=\u00a1\u00a8*[];:_°|\u00ac")
-ENCABEZADOS_ESPERADOS = ["Capitulo", "Subcapitulo", "Preguntas"]
-
-DOWNLOADS: dict[str, tuple[bytes, str, str, datetime]] = {}
-DOWNLOAD_TTL_SECS = 600  # 10 min
-TXT_MEDIA_TYPE = "text/plain"
-
-# ==========================
-# Inicializar API
-# ==========================
-app = FastAPI(title="Validador de Excel Preguntas")
+app = FastAPI(title="Validador de Matrices")
 
 ALLOWED_ORIGINS = [
     "https://www.dipli.ai",
@@ -41,8 +35,41 @@ app.add_middleware(
 )
 
 # ==========================
-# Funciones de validación
+# Descargas temporales
 # ==========================
+DOWNLOADS: dict[str, dict] = {}
+EXP_MINUTES = 5  # tiempo de expiración del link
+
+def cleanup_downloads():
+    now = datetime.utcnow()
+    expired = [t for t, v in DOWNLOADS.items() if v["exp"] <= now]
+    for t in expired:
+        DOWNLOADS.pop(t, None)
+
+def register_download(data: bytes, filename: str, media_type: str) -> str:
+    cleanup_downloads()
+    token = str(uuid.uuid4())
+    expires_at = datetime.utcnow() + timedelta(minutes=EXP_MINUTES)
+    DOWNLOADS[token] = {
+        "data": data,
+        "filename": filename,
+        "media_type": media_type,
+        "exp": expires_at
+    }
+    return token
+
+# ==========================
+# Validaciones
+# ==========================
+CARACTERES_PROHIBIDOS = set("!@#$%&/()=\u00a1\u00a8*[];:_°|\u00ac")
+ENCABEZADOS_ESPERADOS = ["Capitulo", "Subcapitulo", "Preguntas"]
+
+def char_human(ch: str) -> str:
+    code = f"U+{ord(ch):04X}"
+    name = unicodedata.name(ch, "UNKNOWN")
+    visible = ch if not ch.isspace() else repr(ch)
+    return f"{visible} ({code} {name})"
+
 def validar_encabezados(sheet):
     errores = []
     for col, esperado in zip(['A', 'B', 'C'], ENCABEZADOS_ESPERADOS):
@@ -53,6 +80,7 @@ def validar_encabezados(sheet):
     return errores
 
 def buscar_preguntas_duplicadas(sheet):
+    from collections import defaultdict
     preguntas = defaultdict(list)
     for row in range(2, sheet.max_row + 1):
         valor = sheet[f"C{row}"].value
@@ -68,69 +96,46 @@ def buscar_caracteres_prohibidos(sheet):
             if cell.value and isinstance(cell.value, str):
                 for c in cell.value:
                     if c in CARACTERES_PROHIBIDOS:
-                        errores.append(
-                            f"❌ Celda {cell.coordinate} contiene caracter prohibido '{c}' en: '{cell.value}'"
-                        )
+                        errores.append(f"❌ Celda {cell.coordinate} contiene caracter prohibido '{c}' en: '{cell.value}'")
                         break
     return errores
-
-def generar_reporte(errores, nombre_archivo: str):
-    fecha = datetime.now().strftime("%Y%m%d_%H%M%S")
-    nombre = f"reporte_errores_{os.path.splitext(os.path.basename(nombre_archivo))[0]}_{fecha}.txt"
-    buffer = io.StringIO()
-
-    if not errores:
-        buffer.write("✅ VALIDACIÓN EXITOSA: No se encontraron errores.\n")
-    else:
-        buffer.write("❌ VALIDACIÓN FALLIDA: Se encontraron errores:\n\n")
-        buffer.writelines(f"{err}\n" for err in errores)
-
-    return buffer.getvalue().encode("utf-8"), nombre
-
-# ==========================
-# Descargas temporales
-# ==========================
-def cleanup_downloads():
-    now = datetime.utcnow()
-    expired = [t for t, (_, _, _, exp) in DOWNLOADS.items() if exp <= now]
-    for t in expired:
-        DOWNLOADS.pop(t, None)
-
-def register_download(data: bytes, filename: str, media_type: str):
-    cleanup_downloads()
-    token = secrets.token_urlsafe(16)
-    expires_at = datetime.utcnow() + timedelta(seconds=DOWNLOAD_TTL_SECS)
-    DOWNLOADS[token] = (data, filename, media_type, expires_at)
-    return token
 
 # ==========================
 # Endpoints
 # ==========================
-@app.post("/validar/")
-async def validar_excel(request: Request, file: UploadFile = File(...)):
-    if not file.filename.lower().endswith(".xlsx"):
+@app.post("/procesar/")
+async def procesar(file: UploadFile = File(...)):
+    import openpyxl
+
+    if not file.filename.endswith(".xlsx"):
         raise HTTPException(status_code=400, detail="El archivo debe ser .xlsx")
 
     try:
-        wb = openpyxl.load_workbook(io.BytesIO(await file.read()))
-        sheet = wb.active
-
-        errores = []
-        errores.extend(validar_encabezados(sheet))
-        errores.extend(buscar_preguntas_duplicadas(sheet))
-        errores.extend(buscar_caracteres_prohibidos(sheet))
-
-        # Crear reporte
-        data, nombre = generar_reporte(errores, file.filename)
-        token = register_download(data, nombre, TXT_MEDIA_TYPE)
-
-        base_url = str(request.base_url).rstrip('/')
-        download_url = f"{base_url}/download/{token}"
-
-        return {"download_url": download_url, "expires_in_seconds": DOWNLOAD_TTL_SECS, "errores": len(errores)}
-
+        wb = openpyxl.load_workbook(file.file)
+        hoja = wb.active
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error procesando el archivo: {e}")
+        raise HTTPException(status_code=400, detail=f"No se pudo abrir el archivo: {e}")
+
+    errores = []
+    errores.extend(validar_encabezados(hoja))
+    errores.extend(buscar_preguntas_duplicadas(hoja))
+    errores.extend(buscar_caracteres_prohibidos(hoja))
+
+    # Crear reporte TXT en memoria
+    txt_bytes = BytesIO()
+    if not errores:
+        txt_bytes.write("✅ VALIDACIÓN EXITOSA: No se encontraron errores.\n".encode("utf-8"))
+    else:
+        txt_bytes.write("❌ VALIDACIÓN FALLIDA: Se encontraron errores:\n\n".encode("utf-8"))
+        for err in errores:
+            txt_bytes.write(f"{err}\n".encode("utf-8"))
+    txt_bytes.seek(0)
+
+    # Registrar para descarga
+    final_name = f"reporte_errores_{os.path.splitext(file.filename)[0]}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    token = register_download(txt_bytes.getvalue(), final_name, "text/plain; charset=utf-8")
+
+    return JSONResponse({"token": token, "filename": final_name})
 
 @app.get("/download/{token}")
 def download_token(token: str):
@@ -138,19 +143,21 @@ def download_token(token: str):
     item = DOWNLOADS.get(token)
     if not item:
         raise HTTPException(status_code=404, detail="Link expirado o inválido")
-    data, exp = item
-    if exp <= datetime.utcnow():
+
+    if item["exp"] <= datetime.utcnow():
         DOWNLOADS.pop(token, None)
         raise HTTPException(status_code=410, detail="Link expirado")
 
-    filename = f"reporte_errores_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
     headers = {
-        "Content-Disposition": f'attachment; filename="{filename}"',
-        "Cache-Control": "no-store",
+        "Content-Disposition": f'attachment; filename="{item["filename"]}"',
+        "Cache-Control": "no-store"
     }
-    return StreamingResponse(io.BytesIO(data), media_type="text/plain", headers=headers)
+    return StreamingResponse(io.BytesIO(item["data"]), media_type=item["media_type"], headers=headers)
 
 @app.get("/")
-def root():
-    return {"message": "API de Validación de Excel funcionando", "version": "1.0.0"}
+async def root():
+    return {"message": "API de validación de matrices funcionando 🚀"}
 
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy"}
