@@ -133,20 +133,24 @@ async def validar_excel(request: Request, file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Error procesando el archivo: {e}")
 
 @app.get("/download/{token}")
-def download_report(token: str):
+def download_token(token: str):
     cleanup_downloads()
     item = DOWNLOADS.get(token)
     if not item:
         raise HTTPException(status_code=404, detail="Link expirado o inválido")
-
-    data, filename, media_type, exp = item
+    data, exp = item
     if exp <= datetime.utcnow():
         DOWNLOADS.pop(token, None)
         raise HTTPException(status_code=410, detail="Link expirado")
 
-    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
-    return StreamingResponse(io.BytesIO(data), media_type=media_type, headers=headers)
+    filename = f"reporte_errores_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Cache-Control": "no-store",
+    }
+    return StreamingResponse(io.BytesIO(data), media_type="text/plain", headers=headers)
 
 @app.get("/")
 def root():
     return {"message": "API de Validación de Excel funcionando", "version": "1.0.0"}
+
