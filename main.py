@@ -1,34 +1,25 @@
 import os
-import re
 import io
 import uuid
+import re
 import unicodedata
-import zipfile
 from collections import Counter
 from datetime import datetime, timedelta
 from io import BytesIO
 
+import openpyxl
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from docx import Document
 
-# ==========================
-# Configuración
-# ==========================
 app = FastAPI(title="Validador de Matrices")
 
-ALLOWED_ORIGINS = [
-    "https://www.dipli.ai",
-    "https://dipli.ai",
-    "https://isagarcivill09.wixsite.com/turop",
-    "https://isagarcivill09.wixsite.com/turop/tienda",
-    "https://isagarcivill09-wixsite-com.filesusr.com"
-]
-
+# ==========================
+# Configuración CORS
+# ==========================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=["*"],  # 👈 si quieres restringir, pon tu dominio
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -37,8 +28,8 @@ app.add_middleware(
 # ==========================
 # Descargas temporales
 # ==========================
-DOWNLOADS: dict[str, dict] = {}
-EXP_MINUTES = 5  # tiempo de expiración del link
+DOWNLOADS = {}
+EXP_MINUTES = 5
 
 def cleanup_downloads():
     now = datetime.utcnow()
@@ -63,12 +54,6 @@ def register_download(data: bytes, filename: str, media_type: str) -> str:
 # ==========================
 CARACTERES_PROHIBIDOS = set("!@#$%&/()=\u00a1\u00a8*[];:_°|\u00ac")
 ENCABEZADOS_ESPERADOS = ["Capitulo", "Subcapitulo", "Preguntas"]
-
-def char_human(ch: str) -> str:
-    code = f"U+{ord(ch):04X}"
-    name = unicodedata.name(ch, "UNKNOWN")
-    visible = ch if not ch.isspace() else repr(ch)
-    return f"{visible} ({code} {name})"
 
 def validar_encabezados(sheet):
     errores = []
@@ -105,8 +90,6 @@ def buscar_caracteres_prohibidos(sheet):
 # ==========================
 @app.post("/procesar/")
 async def procesar(file: UploadFile = File(...)):
-    import openpyxl
-
     if not file.filename.endswith(".xlsx"):
         raise HTTPException(status_code=400, detail="El archivo debe ser .xlsx")
 
@@ -121,7 +104,7 @@ async def procesar(file: UploadFile = File(...)):
     errores.extend(buscar_preguntas_duplicadas(hoja))
     errores.extend(buscar_caracteres_prohibidos(hoja))
 
-    # Crear reporte TXT en memoria
+    # Crear reporte TXT
     txt_bytes = BytesIO()
     if not errores:
         txt_bytes.write("✅ VALIDACIÓN EXITOSA: No se encontraron errores.\n".encode("utf-8"))
@@ -131,7 +114,6 @@ async def procesar(file: UploadFile = File(...)):
             txt_bytes.write(f"{err}\n".encode("utf-8"))
     txt_bytes.seek(0)
 
-    # Registrar para descarga
     final_name = f"reporte_errores_{os.path.splitext(file.filename)[0]}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
     token = register_download(txt_bytes.getvalue(), final_name, "text/plain; charset=utf-8")
 
@@ -143,10 +125,6 @@ def download_token(token: str):
     item = DOWNLOADS.get(token)
     if not item:
         raise HTTPException(status_code=404, detail="Link expirado o inválido")
-
-    if item["exp"] <= datetime.utcnow():
-        DOWNLOADS.pop(token, None)
-        raise HTTPException(status_code=410, detail="Link expirado")
 
     headers = {
         "Content-Disposition": f'attachment; filename="{item["filename"]}"',
@@ -161,3 +139,4 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
