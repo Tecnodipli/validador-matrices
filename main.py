@@ -1,9 +1,7 @@
 import os
 import io
 import uuid
-import re
-import unicodedata
-from collections import Counter
+from collections import defaultdict
 from datetime import datetime, timedelta
 from io import BytesIO
 
@@ -27,6 +25,14 @@ ALLOWED_ORIGINS = [
     "https://www.dipli.ai/preparaci%C3%B3n",
     "https://www-dipli-ai.filesusr.com"
 ]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,   # ✅ ahora sí aplica tu lista
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ==========================
 # Descargas temporales
@@ -64,18 +70,22 @@ def validar_encabezados(sheet):
         celda = f"{col}1"
         valor = str(sheet[celda].value).strip() if sheet[celda].value else ""
         if valor != esperado:
-            errores.append(f"❌ Celda {celda} debería contener '{esperado}', pero tiene '{valor}'")
+            errores.append(
+                f"❌ Celda {celda} debería contener '{esperado}', pero tiene '{valor}'"
+            )
     return errores
 
 def buscar_preguntas_duplicadas(sheet):
-    from collections import defaultdict
     preguntas = defaultdict(list)
     for row in range(2, sheet.max_row + 1):
         valor = sheet[f"C{row}"].value
         if valor:
             valor = str(valor).strip()
             preguntas[valor].append(row)
-    return [f"❌ Pregunta duplicada en filas {v}: '{k}'" for k, v in preguntas.items() if len(v) > 1]
+    return [
+        f"❌ Pregunta duplicada en filas {v}: '{k}'"
+        for k, v in preguntas.items() if len(v) > 1
+    ]
 
 def buscar_caracteres_prohibidos(sheet):
     errores = []
@@ -84,7 +94,9 @@ def buscar_caracteres_prohibidos(sheet):
             if cell.value and isinstance(cell.value, str):
                 for c in cell.value:
                     if c in CARACTERES_PROHIBIDOS:
-                        errores.append(f"❌ Celda {cell.coordinate} contiene caracter prohibido '{c}' en: '{cell.value}'")
+                        errores.append(
+                            f"❌ Celda {cell.coordinate} contiene caracter prohibido '{c}' en: '{cell.value}'"
+                        )
                         break
     return errores
 
@@ -117,7 +129,10 @@ async def procesar(file: UploadFile = File(...)):
             txt_bytes.write(f"{err}\n".encode("utf-8"))
     txt_bytes.seek(0)
 
-    final_name = f"reporte_errores_{os.path.splitext(file.filename)[0]}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    final_name = (
+        f"reporte_errores_{os.path.splitext(file.filename)[0]}_"
+        f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    )
     token = register_download(txt_bytes.getvalue(), final_name, "text/plain; charset=utf-8")
 
     return JSONResponse({"token": token, "filename": final_name})
@@ -142,6 +157,4 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
-
-
 
