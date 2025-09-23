@@ -12,18 +12,20 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
+
 app = FastAPI(title="Validador de Matrices")
 
-# ==========================
-# Configuración CORS
-# ==========================
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # 👈 si quieres restringir, pon tu dominio
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# =========================
+# CORS: habilitar solo tus dominios
+# =========================
+ALLOWED_ORIGINS = [
+    "https://www.dipli.ai",
+    "https://dipli.ai",
+    "https://isagarcivill09.wixsite.com/turop",
+    "https://isagarcivill09.wixsite.com/turop/tienda",
+    "https://isagarcivill09-wixsite-com.filesusr.com",
+    "https://www.dipli.ai/preparaci%C3%B3n"
+]
 
 # ==========================
 # Descargas temporales
@@ -139,4 +141,5 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
 
