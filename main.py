@@ -24,7 +24,8 @@ ALLOWED_ORIGINS = [
     "https://isagarcivill09.wixsite.com/turop",
     "https://isagarcivill09.wixsite.com/turop/tienda",
     "https://isagarcivill09-wixsite-com.filesusr.com",
-    "https://www.dipli.ai/preparaci%C3%B3n"
+    "https://www.dipli.ai/preparaci%C3%B3n",
+    "https://www-dipli-ai.filesusr.com"
 ]
 
 # ==========================
@@ -141,5 +142,6 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
 
 
